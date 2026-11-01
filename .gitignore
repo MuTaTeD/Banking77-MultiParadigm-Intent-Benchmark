@@ -30,3 +30,9 @@ Report.*
 report.*
 figures/
 duplicates/
+
+# Archived old runs
+**/old/
+**/Old/
+old/
+Old/
