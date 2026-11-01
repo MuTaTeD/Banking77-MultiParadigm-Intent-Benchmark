@@ -6,7 +6,7 @@
 
 This repository contains academic coursework, experimental implementations, and executed Jupyter notebooks for **Special Topics in Natural Language Processing (CSAI8333)**, PhD in Computer Science, Fall 2026 at the **University of Central Punjab (UCP)**, Lahore, Pakistan.
 
-* **Public Repository:** [https://github.com/MuTaTeD/NLP-Assignments](https://github.com/MuTaTeD/NLP-Assignments)
+* **Public Repository:** [https://github.com/MuTaTeD/Banking77-MultiParadigm-Intent-Benchmark](https://github.com/MuTaTeD/Banking77-MultiParadigm-Intent-Benchmark)
 
 ---
 
@@ -26,7 +26,7 @@ This repository contains academic coursework, experimental implementations, and 
 ## 📂 Repository Structure
 
 ```text
-NLP-Assignments/
+Banking77-MultiParadigm-Intent-Benchmark/
 ├── README.md
 ├── .gitignore
 ├── Bert Finetuning/                             # Track B: 12 BERT-Family Encoder Architectures
