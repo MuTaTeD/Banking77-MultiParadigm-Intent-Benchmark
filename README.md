@@ -28,7 +28,7 @@ This repository contains the executed Jupyter notebooks, multi-paradigm empirica
 
 ## 🏗 Project Pipeline Architecture
 
-![End-to-End Multi-Paradigm Project Pipeline Architecture](figures/pipeline_architecture.png)
+![End-to-End Multi-Paradigm Project Pipeline Architecture](figures/banking77_multiparadigm_pipeline.png)
 
 ---
 
@@ -39,7 +39,7 @@ Banking77-MultiParadigm-Intent-Benchmark/
 ├── README.md
 ├── .gitignore
 ├── figures/                                     # 300-DPI Publication Figures
-│   ├── pipeline_architecture.png
+│   ├── banking77_multiparadigm_pipeline.png
 │   ├── pre_vs_post_leap.png
 │   ├── post_tuning_accuracy_comparison.png
 │   └── parameter_vs_accuracy_frontier.png
