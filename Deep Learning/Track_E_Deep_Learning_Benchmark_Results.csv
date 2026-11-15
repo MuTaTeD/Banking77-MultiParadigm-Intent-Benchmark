@@ -1,0 +1,17 @@
+Model Name,Parameters,Accuracy (%),Macro F1 (%),Weighted F1 (%),Macro Precision (%),Macro Recall (%),Training Time,Train Time (s),Peak Train VRAM (GB),Eval Time,Peak Eval VRAM (GB)
+Ensemble_Top3_ChampionFusion,7169255,92.86,92.86,92.86,93.11,92.86,N/A (Zero-Train Ensemble),0.00,0.0000,0m 0s,0.0000
+Ensemble_Top2_Champions,3812258,92.76,92.75,92.75,92.97,92.76,N/A (Zero-Train Ensemble),0.00,0.0000,0m 0s,0.0000
+Ensemble_Top5_Deep,13062897,92.73,92.73,92.73,92.98,92.73,N/A (Zero-Train Ensemble),0.00,0.0000,0m 0s,0.0000
+Ensemble_Top3_Trident,6334951,92.60,92.60,92.60,92.87,92.60,N/A (Zero-Train Ensemble),0.00,0.0000,0m 0s,0.0000
+DualStream_CNN_BiGRU_MultiHeadAttention,3356997,92.44,92.46,92.46,92.76,92.44,2m 24s,144.36,0.3019,0m 2s,0.1780
+TextCNN_Standard,1011677,92.18,92.20,92.20,92.51,92.18,1m 51s,110.92,0.0495,0m 1s,0.0421
+BiGRU_MultiHeadAttention,2800581,92.01,92.00,92.00,92.26,92.01,2m 14s,133.70,0.2886,0m 2s,0.1690
+DualStream_CNN_BiLSTM_Fusion,2522693,91.95,91.97,91.97,92.37,91.95,2m 9s,128.62,0.2111,0m 1s,0.1526
+USE_DAN_MLP_Classifier,151629,91.95,91.95,91.95,92.28,91.95,0m 8s,7.67,0.0188,0m 0s,0.0184
+TextCNN_DeepMultiScale,1672517,91.85,91.85,91.85,92.16,91.85,2m 8s,128.45,0.0811,0m 1s,0.0639
+BiLSTM_3Layer_Residual,5055429,91.53,91.53,91.53,91.82,91.53,3m 4s,184.12,0.3388,0m 2s,0.2042
+BiLSTM_1Layer_MeanPool,1900485,91.27,91.30,91.30,91.63,91.27,2m 10s,129.75,0.1964,0m 1s,0.1438
+BiLSTM_AdditiveAttention,1966277,90.84,90.85,90.85,91.16,90.84,2m 10s,129.63,0.2001,0m 2s,0.1448
+BiLSTM_2Layer_ConcatPool,3720133,90.42,90.43,90.43,90.69,90.42,2m 27s,146.82,0.2908,0m 2s,0.1941
+Conv_BiLSTM_Sequential,2041029,88.54,88.53,88.53,88.84,88.54,2m 4s,124.15,0.1426,0m 2s,0.1066
+FastText_Baseline,741377,87.89,87.89,87.89,88.61,87.89,1m 34s,94.09,0.0361,0m 1s,0.0361

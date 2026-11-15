@@ -29,7 +29,7 @@ except ImportError:
 
 import numpy as np
 import pandas as pd
-from datasets import load_dataset
+from dataset import load_banking77_raw
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 
@@ -162,6 +162,30 @@ def build_keras_model(model_name: str, vocab_size: int, embedding_dim: int = 300
         x = layers.Dropout(0.4)(x)
         outputs = layers.Dense(num_classes, activation="softmax", name="classifier")(x)
 
+    # 11. Dual-Stream TextCNN + BiGRU-MultiHeadAttention Feature Fusion (Champion Fusion)
+    elif name in ["dualstream_cnn_bigru_multihead_attention", "dualstream_cnn_bigru_attention"]:
+        # Stream 1: CNN
+        conv_pools = []
+        for k in [2, 3, 4]:
+            c = layers.Conv1D(128, kernel_size=k, activation="relu")(emb)
+            p = layers.GlobalMaxPooling1D()(c)
+            conv_pools.append(p)
+        cnn_feat = layers.concatenate(conv_pools, axis=-1)
+
+        # Stream 2: BiGRU + Multi-Head Attention
+        gru = layers.Bidirectional(layers.GRU(256, return_sequences=True, dropout=0.3))(emb)
+        attn = layers.MultiHeadAttention(num_heads=4, key_dim=64)(gru, gru)
+        attn_norm = layers.LayerNormalization()(attn)
+        gru_feat = layers.GlobalAveragePooling1D()(attn_norm)
+
+        # Fusion
+        fused = layers.concatenate([cnn_feat, gru_feat], axis=-1)
+        x = layers.Dense(256)(fused)
+        x = layers.BatchNormalization()(x)
+        x = layers.Activation("relu")(x)
+        x = layers.Dropout(0.4)(x)
+        outputs = layers.Dense(num_classes, activation="softmax", name="classifier")(x)
+
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
@@ -180,3 +204,4 @@ if __name__ == "__main__":
         m = build_keras_model(model_name, vocab_size=5000, embedding_dim=300, num_classes=77)
         print(f"  ✓ {m.name:<30} | Total params: {m.count_params():,}")
     print("[KERAS SUITE] All 10 models instantiated successfully.")
+

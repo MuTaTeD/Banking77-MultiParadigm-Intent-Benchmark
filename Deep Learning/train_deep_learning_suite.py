@@ -8,7 +8,8 @@ Banking77 split (10,003 train / 3,080 test queries) with fixed seed 42.
 Features:
 - Automated GPU Peak Memory Telemetry (torch.cuda.max_memory_allocated).
 - Automated Training & Evaluation Wall-Clock Timing.
-- Resumable Execution (caches per-model metrics.json).
+- Resumable Execution (caches per-model metrics.json & model_best.pt).
+- Soft-Voting Ensemble Experiment (loads saved checkpoints with ZERO re-training).
 - JSON Predictions & Metrics export + Consolidated CSV summary table.
 """
 
@@ -18,12 +19,13 @@ import json
 import time
 import random
 import argparse
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
@@ -56,10 +58,7 @@ def format_time(seconds: float) -> str:
 def evaluate(model: nn.Module, dataloader, device: torch.device):
     """
     Evaluates model on dataloader, computing:
-    - Loss
-    - Accuracy
-    - Macro & Weighted F1
-    - Macro & Weighted Precision / Recall
+    - Loss, Accuracy, Macro & Weighted F1, Macro & Weighted Precision / Recall
     - Raw predictions and targets
     """
     model.eval()
@@ -102,6 +101,157 @@ def evaluate(model: nn.Module, dataloader, device: torch.device):
         "weighted_recall": round(weighted_r, 2),
     }
     return metrics, all_preds, all_targets
+
+
+def get_model_probabilities(
+    model_slug: str,
+    vocab,
+    model_dir: str,
+    dataloader,
+    device: torch.device
+) -> Tuple[np.ndarray, List[int], int]:
+    """
+    Loads saved checkpoint weights (model_best.pt) without training
+    and outputs softmax probability distribution [N, 77] across test set.
+    """
+    weights_path = os.path.join(model_dir, "model_best.pt")
+    if not os.path.exists(weights_path):
+        raise FileNotFoundError(f"Checkpoint not found at: {weights_path}")
+
+    model = get_model(
+        model_name=model_slug,
+        vocab_size=len(vocab),
+        embedding_dim=300,
+        num_classes=77,
+        pretrained_embeddings=None,
+        freeze_embeddings=False
+    ).to(device)
+
+    model.load_state_dict(torch.load(weights_path, map_location=device))
+    model.eval()
+
+    total_params = sum(p.numel() for p in model.parameters())
+    all_probs = []
+    all_targets = []
+
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["label"].to(device)
+            lengths = batch["length"].to(device)
+            logits = model(input_ids, lengths)
+            probs = F.softmax(logits, dim=-1).cpu()
+            all_probs.append(probs)
+            all_targets.extend(labels.cpu().numpy().tolist())
+
+    return torch.cat(all_probs, dim=0).numpy(), all_targets, total_params
+
+
+def run_soft_voting_ensemble(
+    output_dir: str,
+    test_loader,
+    vocab,
+    device: torch.device
+) -> List[Dict[str, Any]]:
+    """
+    Executes Soft-Voting Ensembles by loading saved checkpoints with ZERO re-training:
+    1. Ensemble_Top3_Trident: TextCNN_Standard + BiGRU_MultiHeadAttention + DualStream_CNN_BiLSTM_Fusion
+    2. Ensemble_Top5_Deep: Top 5 non-transformer architectures
+    """
+    print("\n" + "="*80)
+    print("[ENSEMBLE] Evaluating Soft-Voting Ensembles (Direct Checkpoint Loading)")
+    print("="*80)
+
+    candidate_slugs = [
+        "textcnn_standard",
+        "bigru_multihead_attention",
+        "dualstream_cnn_bilstm_fusion",
+        "textcnn_deep_multiscale",
+        "bilstm_3layer_residual"
+    ]
+
+    prob_dict = {}
+    param_dict = {}
+    common_targets = None
+
+    for slug in candidate_slugs:
+        slug_dir = os.path.join(output_dir, slug)
+        weights_file = os.path.join(slug_dir, "model_best.pt")
+        if os.path.exists(weights_file):
+            t0 = time.time()
+            probs, targets, params = get_model_probabilities(slug, vocab, slug_dir, test_loader, device)
+            prob_dict[slug] = probs
+            param_dict[slug] = params
+            common_targets = targets
+            print(f"  ✓ Loaded '{slug}' ({params:,} params) -> Probabilities extracted in {time.time()-t0:.2f}s")
+        else:
+            print(f"  ✗ Checkpoint for '{slug}' not found in {slug_dir}. Skipping.")
+
+    ensemble_configs = []
+    top3 = ["textcnn_standard", "bigru_multihead_attention", "dualstream_cnn_bilstm_fusion"]
+    if all(k in prob_dict for k in top3):
+        ensemble_configs.append(("Ensemble_Top3_Trident", top3, "Kim-CNN + BiGRU-Attn + DualStream"))
+
+    top5 = ["textcnn_standard", "bigru_multihead_attention", "dualstream_cnn_bilstm_fusion",
+            "textcnn_deep_multiscale", "bilstm_3layer_residual"]
+    if all(k in prob_dict for k in top5):
+        ensemble_configs.append(("Ensemble_Top5_Deep", top5, "Top 5 Non-Transformer Suite"))
+
+    ensemble_results = []
+    for ens_name, members, desc in ensemble_configs:
+        t0 = time.time()
+        stacked = np.stack([prob_dict[m] for m in members], axis=0)
+        avg_probs = np.mean(stacked, axis=0)
+        preds = np.argmax(avg_probs, axis=1)
+        eval_time = time.time() - t0
+
+        acc = accuracy_score(common_targets, preds) * 100.0
+        macro_f1 = f1_score(common_targets, preds, average="macro", zero_division=0) * 100.0
+        weighted_f1 = f1_score(common_targets, preds, average="weighted", zero_division=0) * 100.0
+        macro_p = precision_score(common_targets, preds, average="macro", zero_division=0) * 100.0
+        macro_r = recall_score(common_targets, preds, average="macro", zero_division=0) * 100.0
+        combined_params = sum(param_dict[m] for m in members)
+
+        print(f"\n[ENSEMBLE RESULT: {ens_name}] ({desc})")
+        print(f"   Accuracy: {acc:.2f}% | Macro F1: {macro_f1:.2f}% | Weighted F1: {weighted_f1:.2f}%")
+        print(f"   Inference Time: {eval_time:.2f}s | Combined Parameters: {combined_params:,}")
+
+        # Save predictions and metrics
+        ens_dir = os.path.join(output_dir, ens_name.lower())
+        os.makedirs(ens_dir, exist_ok=True)
+        with open(os.path.join(ens_dir, "predictions.json"), "w") as f:
+            json.dump({"targets": common_targets, "predictions": preds.tolist()}, f)
+
+        res_dict = {
+            "model_name": ens_name,
+            "members": members,
+            "total_params": combined_params,
+            "accuracy": round(acc, 2),
+            "macro_f1": round(macro_f1, 2),
+            "weighted_f1": round(weighted_f1, 2),
+            "macro_precision": round(macro_p, 2),
+            "macro_recall": round(macro_r, 2),
+            "inference_time_seconds": round(eval_time, 2)
+        }
+        with open(os.path.join(ens_dir, "metrics.json"), "w") as f:
+            json.dump(res_dict, f, indent=2)
+
+        ensemble_results.append({
+            "Model Name": ens_name,
+            "Parameters": combined_params,
+            "Accuracy (%)": round(acc, 2),
+            "Macro F1 (%)": round(macro_f1, 2),
+            "Weighted F1 (%)": round(weighted_f1, 2),
+            "Macro Precision (%)": round(macro_p, 2),
+            "Macro Recall (%)": round(macro_r, 2),
+            "Training Time": "N/A (Zero-Train Ensemble)",
+            "Train Time (s)": 0.0,
+            "Peak Train VRAM (GB)": 0.0,
+            "Eval Time": format_time(eval_time),
+            "Peak Eval VRAM (GB)": 0.0,
+        })
+
+    return ensemble_results
 
 
 def train_single_model(
@@ -243,7 +393,6 @@ def train_single_model(
         }
     }
 
-    # Save metrics and predictions
     with open(metrics_path, "w") as f:
         json.dump(result_summary, f, indent=2)
 
@@ -257,8 +406,10 @@ def train_single_model(
 def main():
     parser = argparse.ArgumentParser(description="Track E: Pre-Transformer Deep Learning Suite")
     parser.add_argument("--model", type=str, default="all",
-                        choices=["all"] + list(MODEL_REGISTRY.keys()),
-                        help="Specific model to train or 'all' to run full suite.")
+                        choices=["all", "none"] + list(MODEL_REGISTRY.keys()),
+                        help="Specific model to train, 'all' to run full suite, or 'none' to skip training.")
+    parser.add_argument("--ensemble", action="store_true",
+                        help="Run soft-voting ensemble using existing saved checkpoints.")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size (default: 64)")
     parser.add_argument("--epochs", type=int, default=15, help="Number of epochs (default: 15)")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate (default: 1e-3)")
@@ -287,25 +438,32 @@ def main():
         download_glove=True
     )
 
-    models_to_run = list(MODEL_REGISTRY.keys()) if args.model == "all" else [args.model]
-
     all_results = []
-    for idx, slug in enumerate(models_to_run, 1):
-        print(f"\n[{idx}/{len(models_to_run)}] Running Architecture: {slug}")
-        res = train_single_model(
-            model_slug=slug,
-            train_loader=train_loader,
-            test_loader=test_loader,
-            vocab=vocab,
-            embedding_matrix=emb_matrix,
-            device=device,
-            output_dir=args.output_dir,
-            epochs=args.epochs,
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            freeze_embeddings=args.freeze_embeddings
-        )
-        all_results.append(res)
+    if args.model != "none":
+        models_to_run = list(MODEL_REGISTRY.keys()) if args.model == "all" else [args.model]
+        for idx, slug in enumerate(models_to_run, 1):
+            print(f"\n[{idx}/{len(models_to_run)}] Running Architecture: {slug}")
+            res = train_single_model(
+                model_slug=slug,
+                train_loader=train_loader,
+                test_loader=test_loader,
+                vocab=vocab,
+                embedding_matrix=emb_matrix,
+                device=device,
+                output_dir=args.output_dir,
+                epochs=args.epochs,
+                lr=args.lr,
+                weight_decay=args.weight_decay,
+                freeze_embeddings=args.freeze_embeddings
+            )
+            all_results.append(res)
+    else:
+        # Load all existing cached results from output_dir
+        for slug in MODEL_REGISTRY.keys():
+            m_file = os.path.join(args.output_dir, slug, "metrics.json")
+            if os.path.exists(m_file):
+                with open(m_file, "r") as f:
+                    all_results.append(json.load(f))
 
     # Build Master Consolidated Table
     table_rows = []
@@ -313,7 +471,7 @@ def main():
         post = r["post_metrics"]
         hw = r["hardware_telemetry"]
         table_rows.append({
-            "Model Name": r["model_slug"],
+            "Model Name": r.get("model_name", r.get("model_slug")),
             "Parameters": r["total_params"],
             "Accuracy (%)": post["accuracy"],
             "Macro F1 (%)": post["macro_f1"],
@@ -327,7 +485,20 @@ def main():
             "Peak Eval VRAM (GB)": hw["peak_vram_eval_gb"],
         })
 
+    # Run Soft-Voting Ensemble if requested or if running 'all'
+    if args.ensemble or args.model == "all":
+        ensemble_rows = run_soft_voting_ensemble(
+            output_dir=args.output_dir,
+            test_loader=test_loader,
+            vocab=vocab,
+            device=device
+        )
+        table_rows.extend(ensemble_rows)
+
     df = pd.DataFrame(table_rows)
+    if "Accuracy (%)" in df.columns:
+        df = df.sort_values(by="Accuracy (%)", ascending=False).reset_index(drop=True)
+
     csv_path = os.path.join(args.output_dir, "Track_E_Deep_Learning_Benchmark_Results.csv")
     df.to_csv(csv_path, index=False)
     print(f"\n{'='*80}\n[COMPLETE] All Track E experiments completed successfully!")

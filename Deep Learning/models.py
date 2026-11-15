@@ -443,6 +443,79 @@ class DualStreamCNNBiLSTMFusion(nn.Module):
 
 
 # =========================================================================
+# Model 11: Dual-Stream TextCNN + BiGRU-MultiHeadAttention Feature Fusion (Champion Fusion)
+# =========================================================================
+class DualStreamCNNBiGRUMultiHeadAttention(nn.Module):
+    """
+    Champion Dual-Stream Architecture combining the Top-2 individual performers:
+    - Stream 1: TextCNN (Kim, 2014) with multi-scale kernels [2, 3, 4] (128 filters each -> 384d)
+    - Stream 2: 2-Layer BiGRU with 4-Head Self-Attention Pooling + LayerNorm (512d)
+    - Fusion Head: Concat [Stream 1; Stream 2] (896d) -> Dense(256) -> BatchNorm1d -> ReLU -> Dropout(0.4) -> Dense(77)
+    """
+    def __init__(self, vocab_size: int, embedding_dim: int = 300, num_classes: int = 77,
+                 pretrained_embeddings: Optional[torch.Tensor] = None, freeze_embeddings: bool = False,
+                 filter_sizes: List[int] = [2, 3, 4], num_filters: int = 128,
+                 gru_hidden: int = 256, num_heads: int = 4, dense_dim: int = 256, dropout: float = 0.4):
+        super().__init__()
+        self.embedding = create_embedding_layer(vocab_size, embedding_dim, pretrained_embeddings, freeze_embeddings)
+
+        # Stream 1: TextCNN
+        self.convs = nn.ModuleList([
+            nn.Conv1d(embedding_dim, num_filters, kernel_size=k)
+            for k in filter_sizes
+        ])
+        cnn_dim = len(filter_sizes) * num_filters
+
+        # Stream 2: 2-Layer BiGRU + 4-Head Self-Attention
+        self.gru = nn.GRU(
+            input_size=embedding_dim,
+            hidden_size=gru_hidden,
+            num_layers=2,
+            bidirectional=True,
+            dropout=0.3,
+            batch_first=True
+        )
+        self.d_model = gru_hidden * 2
+        self.num_heads = num_heads
+        self.d_k = self.d_model // num_heads
+        self.head_queries = nn.Parameter(torch.randn(num_heads, self.d_model))
+        self.ln_gru = nn.LayerNorm(self.d_model)
+
+        # Fusion Head
+        total_dim = cnn_dim + self.d_model
+        self.fc1 = nn.Linear(total_dim, dense_dim)
+        self.bn_dense = nn.BatchNorm1d(dense_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(dense_dim, num_classes)
+
+    def forward(self, input_ids: torch.Tensor, length: Optional[torch.Tensor] = None) -> torch.Tensor:
+        emb = self.embedding(input_ids)  # [B, T, D]
+        mask = (input_ids != 0)
+
+        # --- Stream 1: TextCNN ---
+        emb_trans = emb.transpose(1, 2)
+        conv_outs = []
+        for conv in self.convs:
+            c = F.relu(conv(emb_trans))
+            p = F.adaptive_max_pool1d(c, 1).squeeze(-1)
+            conv_outs.append(p)
+        cnn_feat = torch.cat(conv_outs, dim=1)  # [B, cnn_dim]
+
+        # --- Stream 2: BiGRU + Multi-Head Self-Attention ---
+        gru_out, _ = self.gru(emb)  # [B, T, 2H]
+        scores = torch.einsum("kh,bth->bkt", self.head_queries, gru_out) / math.sqrt(self.d_k)
+        scores = scores.masked_fill(~mask.unsqueeze(1), -1e9)
+        attn = F.softmax(scores, dim=-1)
+        gru_feat = self.ln_gru(torch.bmm(attn, gru_out).mean(dim=1))  # [B, 2H]
+
+        # --- Fusion ---
+        fused = torch.cat([cnn_feat, gru_feat], dim=1)  # [B, cnn_dim + 2H]
+        h = F.relu(self.bn_dense(self.fc1(fused)))
+        h = self.dropout(h)
+        return self.fc2(h)
+
+
+# =========================================================================
 # Model Registry & Factory
 # =========================================================================
 MODEL_REGISTRY = {
@@ -456,6 +529,8 @@ MODEL_REGISTRY = {
     "bigru_multihead_attention": BiGRUMultiHeadAttention,
     "conv_bilstm_sequential": ConvBiLSTMSequential,
     "dualstream_cnn_bilstm_fusion": DualStreamCNNBiLSTMFusion,
+    "dualstream_cnn_bigru_multihead_attention": DualStreamCNNBiGRUMultiHeadAttention,
+    "dualstream_cnn_bigru_attention": DualStreamCNNBiGRUMultiHeadAttention,
 }
 
 
@@ -479,3 +554,4 @@ def get_model(
         pretrained_embeddings=pretrained_embeddings,
         freeze_embeddings=freeze_embeddings
     )
+
